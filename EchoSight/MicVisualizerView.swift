@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MicVisualizerView: View {
     @StateObject private var meter = AudioBandsMeter()
+    @Environment(\.appThemeColor) private var appThemeColor
 
     var body: some View {
         VStack(spacing: 18) {
@@ -14,7 +15,7 @@ struct MicVisualizerView: View {
                     .frame(width: 10, height: 10)
             }
 
-            BandsBarView(bands: meter.bands, calibrated: meter.calibrated)
+            BandsBarView(bands: meter.bands, calibrated: meter.calibrated, barColor: appThemeColor)
 
             HStack(spacing: 12) {
                 Button(meter.isRunning ? "Stop" : "Start") {
@@ -56,6 +57,7 @@ struct MicVisualizerView: View {
 private struct BandsBarView: View {
     let bands: [Float]
     let calibrated: Bool
+    let barColor: Color
 
     private let labels = ["Low", "L-Mid", "Mid", "H-Mid", "High"]
 
@@ -70,7 +72,7 @@ private struct BandsBarView: View {
                                 .frame(width: 46, height: 170)
 
                             RoundedRectangle(cornerRadius: 10)
-                                .fill(Color.blue.opacity(0.85))
+                                .fill(barColor.opacity(0.85))
                                 .frame(width: 46, height: max(6, 170 * CGFloat(bands[i])))
 
                             if calibrated {

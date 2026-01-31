@@ -2,10 +2,12 @@ import SwiftUI
 import AVFoundation
 import Combine
 
-final class CameraManager: NSObject, ObservableObject {
+final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     let session = AVCaptureSession()
     @Published var isAuthorized = false
     private var isConfigured = false
+    private let outputQueue = DispatchQueue(label: "echosight.camera.output")
+    var onSampleBuffer: ((CMSampleBuffer) -> Void)?
 
     func configure() {
         guard !isConfigured else { return }
@@ -51,9 +53,14 @@ final class CameraManager: NSObject, ObservableObject {
 
         // Output (optional; preview layer doesn't require a data output, but keeping for completeness)
         let videoOutput = AVCaptureVideoDataOutput()
+        videoOutput.alwaysDiscardsLateVideoFrames = true
+        videoOutput.videoSettings = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+        ]
         if session.canAddOutput(videoOutput) {
             session.addOutput(videoOutput)
         }
+        videoOutput.setSampleBufferDelegate(self, queue: outputQueue)
 
         session.commitConfiguration()
     }
@@ -68,6 +75,10 @@ final class CameraManager: NSObject, ObservableObject {
     func stop() {
         guard session.isRunning else { return }
         session.stopRunning()
+    }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        onSampleBuffer?(sampleBuffer)
     }
 }
 

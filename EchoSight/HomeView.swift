@@ -141,6 +141,9 @@ enum ThemeColor: String, CaseIterable, Identifiable {
     case orange
     case teal
     case pink
+    case purple
+    case indigo
+    case red
 
     var id: String { rawValue }
 
@@ -151,6 +154,9 @@ enum ThemeColor: String, CaseIterable, Identifiable {
         case .orange: return "Orange"
         case .teal: return "Teal"
         case .pink: return "Pink"
+        case .purple: return "Purple"
+        case .indigo: return "Indigo"
+        case .red: return "Red"
         }
     }
 
@@ -161,13 +167,28 @@ enum ThemeColor: String, CaseIterable, Identifiable {
         case .orange: return .orange
         case .teal: return .teal
         case .pink: return .pink
+        case .purple: return .purple
+        case .indigo: return .indigo
+        case .red: return .red
         }
+    }
+}
+
+private struct AppThemeColorKey: EnvironmentKey {
+    static let defaultValue: Color = .blue
+}
+
+extension EnvironmentValues {
+    var appThemeColor: Color {
+        get { self[AppThemeColorKey.self] }
+        set { self[AppThemeColorKey.self] = newValue }
     }
 }
 
 private struct TileLink: View {
     @AppStorage("accessibility.simplifiedUI") private var simplifiedUI: Bool = false
     @AppStorage("accessibility.simplifiedUI.includeRed") private var simplifyRedTiles: Bool = false
+    @Environment(\.appThemeColor) private var appThemeColor
 
     let title: String
     let subtitle: String
@@ -205,7 +226,7 @@ private struct TileLink: View {
                     .frame(height: 160)
                     .background(
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(Color.blue)
+                            .fill(appThemeColor)
                             .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
                     )
                 } else if simplifyRedTiles {
@@ -311,6 +332,7 @@ private struct TileLink: View {
 private struct ActionTile: View {
     @AppStorage("accessibility.simplifiedUI") private var simplifiedUI: Bool = false
     @AppStorage("accessibility.simplifiedUI.includeRed") private var simplifyRedTiles: Bool = false
+    @Environment(\.appThemeColor) private var appThemeColor
 
     let title: String
     let subtitle: String
@@ -342,7 +364,7 @@ private struct ActionTile: View {
                 .frame(height: 100)
                 .background(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(iconColor == nil ? Color.blue : Color.red)
+                        .fill(iconColor == nil ? appThemeColor : Color.red)
                         .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
                 )
                 .foregroundStyle(.white)
@@ -500,17 +522,94 @@ private struct CameraStatusCard: View {
     }
 }
 
+private struct DiagnosticsOverlay: View {
+    let info: DiagnosticsInfo
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Diagnostics")
+                .font(.caption.weight(.semibold))
+            Text("Model: \(info.modelName)")
+                .font(.caption2)
+            Text("FPS: \(String(format: "%.1f", info.fps))")
+                .font(.caption2)
+            Text("Inference: \(String(format: "%.1f", info.inferenceMs)) ms")
+                .font(.caption2)
+            Text("Compute: \(info.computeUnits)")
+                .font(.caption2)
+            Text("ANE Allowed: \(info.usesNeuralEngine ? "Yes" : "No")")
+                .font(.caption2)
+            if !info.topDetections.isEmpty {
+                Text("Top: \(info.topDetections.joined(separator: ", "))")
+                    .font(.caption2)
+            }
+        }
+        .padding(8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+private struct PressableButtonStyle: ButtonStyle {
+    let prominent: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .padding(.vertical, 10)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(backgroundColor(pressed: configuration.isPressed))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(borderColor, lineWidth: prominent ? 0 : 1)
+            )
+            .foregroundStyle(foregroundColor)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+
+    @Environment(\.appThemeColor) private var appThemeColor
+
+    private var borderColor: Color {
+        appThemeColor.opacity(0.35)
+    }
+
+    private func backgroundColor(pressed: Bool) -> Color {
+        if prominent {
+            return appThemeColor.opacity(pressed ? 0.75 : 1.0)
+        }
+        return pressed ? appThemeColor.opacity(0.15) : Color(.systemBackground)
+    }
+
+    private var foregroundColor: Color {
+        prominent ? .white : .primary
+    }
+}
+
 struct ObjectDetectionPage: View {
     @StateObject private var camera = CameraManager()
+    @StateObject private var viewModel = ObjectDetectionViewModel()
+    @StateObject private var announcer = AnnouncementController()
     @State private var audioFeedback: Bool = true
-    @State private var statusText: String = "Object ahead"
+    @State private var showDiagnostics: Bool = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                CameraPreviewCard(camera: camera, title: "Object Detection Preview")
-                CameraStatusCard(title: "Detected Object", status: statusText)
+                ZStack(alignment: .topLeading) {
+                    CameraPreviewCard(camera: camera, title: "Object Detection Preview")
+                    if showDiagnostics {
+                        DiagnosticsOverlay(info: viewModel.diagnostics)
+                            .padding(12)
+                    }
+                }
+                CameraStatusCard(title: "Detected Object", status: viewModel.statusText)
                 Toggle("Audio feedback", isOn: $audioFeedback)
+                    .padding(.horizontal)
+                Toggle("Show diagnostics", isOn: $showDiagnostics)
                     .padding(.horizontal)
                 Text("On-device only. No images leave your device.")
                     .font(.footnote)
@@ -525,22 +624,35 @@ struct ObjectDetectionPage: View {
         .background(Color(.systemBackground))
         .onAppear {
             camera.configure()
+            camera.onSampleBuffer = { [weak viewModel] sample in
+                viewModel?.process(sampleBuffer: sample)
+            }
             camera.start()
+        }
+        .onChange(of: viewModel.statusText) { newValue in
+            if audioFeedback {
+                announcer.announce(newValue)
+            }
         }
         .onChange(of: camera.isAuthorized) { authorized in
             if authorized { camera.start() }
         }
         .onDisappear {
+            camera.onSampleBuffer = nil
             camera.stop()
+            announcer.stop()
         }
     }
 }
 
 struct TextReaderPage: View {
     @StateObject private var camera = CameraManager()
-    @StateObject private var speech = TextReaderSpeech()
+    @StateObject private var speech = SpeechAnnouncer()
+    @StateObject private var viewModel = TextReaderViewModel()
     @State private var audioFeedback: Bool = true
-    @State private var recognizedText: String = "Recognized text will appear here."
+    @State private var speechRate: Double = 0.5
+    @State private var speechPitch: Double = 1.0
+    @State private var speechVolume: Double = 1.0
 
     var body: some View {
         ScrollView {
@@ -548,20 +660,16 @@ struct TextReaderPage: View {
                 CameraPreviewCard(camera: camera, title: "Text Reader Preview")
 
                 Button {
-                    // Placeholder: simulate capture
-                    recognizedText = "Sample text captured from the camera."
-                    if audioFeedback {
-                        speech.speak(recognizedText)
-                    }
+                    viewModel.capture()
                 } label: {
                     Label("Capture Text", systemImage: "camera.circle")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PressableButtonStyle(prominent: true))
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Recognized Text")
                         .font(.headline)
-                    Text(recognizedText)
+                    Text(viewModel.recognizedText)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -580,32 +688,35 @@ struct TextReaderPage: View {
 
                 HStack(spacing: 12) {
                     Button {
-                        speech.speak(recognizedText)
+                        speech.speak(viewModel.recognizedText, rate: speechRate, pitch: speechPitch, volume: speechVolume)
                     } label: {
                         Image(systemName: "play.fill")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PressableButtonStyle(prominent: true))
                     Button {
                         speech.pause()
                     } label: {
                         Image(systemName: "pause.fill")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(PressableButtonStyle(prominent: false))
                     Button {
                         speech.stop()
                     } label: {
                         Image(systemName: "stop.fill")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(PressableButtonStyle(prominent: false))
                 }
 
-                Toggle("Audio feedback", isOn: $audioFeedback)
+                Toggle("Auto read after capture", isOn: $audioFeedback)
                     .padding(.horizontal)
-                Text("On-device only. OCR will run locally using Vision in the future.")
+                MorseSettingSlider(title: "Speech rate", value: $speechRate, range: 0.3...0.7, suffix: "")
+                MorseSettingSlider(title: "Speech pitch", value: $speechPitch, range: 0.7...1.3, suffix: "")
+                MorseSettingSlider(title: "Speech volume", value: $speechVolume, range: 0.2...1.0, suffix: "")
+                Text("On-device only. OCR runs locally using Vision.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal)
-                // TODO: Integrate Vision text recognition (VNRecognizeTextRequest).
+                // TODO: Fine-tune Vision text recognition and post-processing.
             }
             .padding()
         }
@@ -614,12 +725,30 @@ struct TextReaderPage: View {
         .background(Color(.systemBackground))
         .onAppear {
             camera.configure()
+            camera.onSampleBuffer = { [weak viewModel] sample in
+                viewModel?.update(sampleBuffer: sample)
+            }
             camera.start()
+        }
+        .onChange(of: viewModel.recognizedText) { newValue in
+            if audioFeedback {
+                speech.speak(newValue, rate: speechRate, pitch: speechPitch, volume: speechVolume, debounce: true)
+            }
+        }
+        .onChange(of: speechRate) { _ in
+            speech.restartIfSpeaking(rate: speechRate, pitch: speechPitch, volume: speechVolume)
+        }
+        .onChange(of: speechPitch) { _ in
+            speech.restartIfSpeaking(rate: speechRate, pitch: speechPitch, volume: speechVolume)
+        }
+        .onChange(of: speechVolume) { _ in
+            speech.restartIfSpeaking(rate: speechRate, pitch: speechPitch, volume: speechVolume)
         }
         .onChange(of: camera.isAuthorized) { authorized in
             if authorized { camera.start() }
         }
         .onDisappear {
+            camera.onSampleBuffer = nil
             camera.stop()
             speech.stop()
         }
@@ -628,15 +757,25 @@ struct TextReaderPage: View {
 
 struct CurrencyIdentifierPage: View {
     @StateObject private var camera = CameraManager()
+    @StateObject private var viewModel = CurrencyIdentifierViewModel()
+    @StateObject private var announcer = AnnouncementController()
     @State private var audioFeedback: Bool = true
-    @State private var statusText: String = "Detected: $20"
+    @State private var showDiagnostics: Bool = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                CameraPreviewCard(camera: camera, title: "Currency Identifier Preview")
-                CameraStatusCard(title: "Denomination", status: statusText)
+                ZStack(alignment: .topLeading) {
+                    CameraPreviewCard(camera: camera, title: "Currency Identifier Preview")
+                    if showDiagnostics {
+                        DiagnosticsOverlay(info: viewModel.diagnostics)
+                            .padding(12)
+                    }
+                }
+                CameraStatusCard(title: "Denomination", status: viewModel.statusText)
                 Toggle("Audio feedback", isOn: $audioFeedback)
+                    .padding(.horizontal)
+                Toggle("Show diagnostics", isOn: $showDiagnostics)
                     .padding(.horizontal)
                 Text("On-device only. No images leave your device.")
                     .font(.footnote)
@@ -651,28 +790,48 @@ struct CurrencyIdentifierPage: View {
         .background(Color(.systemBackground))
         .onAppear {
             camera.configure()
+            camera.onSampleBuffer = { [weak viewModel] sample in
+                viewModel?.update(sampleBuffer: sample)
+            }
             camera.start()
+        }
+        .onChange(of: viewModel.statusText) { newValue in
+            if audioFeedback {
+                announcer.announce(newValue)
+            }
         }
         .onChange(of: camera.isAuthorized) { authorized in
             if authorized { camera.start() }
         }
         .onDisappear {
+            camera.onSampleBuffer = nil
             camera.stop()
+            announcer.stop()
         }
     }
 }
 
 struct NearbyPeoplePage: View {
     @StateObject private var camera = CameraManager()
+    @StateObject private var viewModel = PeopleDetectionViewModel()
+    @StateObject private var announcer = AnnouncementController()
     @State private var audioFeedback: Bool = true
-    @State private var statusText: String = "Person ahead"
+    @State private var showDiagnostics: Bool = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                CameraPreviewCard(camera: camera, title: "Nearby People Preview")
-                CameraStatusCard(title: "Relative Position", status: statusText)
+                ZStack(alignment: .topLeading) {
+                    CameraPreviewCard(camera: camera, title: "Nearby People Preview")
+                    if showDiagnostics {
+                        DiagnosticsOverlay(info: viewModel.diagnostics)
+                            .padding(12)
+                    }
+                }
+                CameraStatusCard(title: "Relative Position", status: viewModel.statusText)
                 Toggle("Audio feedback", isOn: $audioFeedback)
+                    .padding(.horizontal)
+                Toggle("Show diagnostics", isOn: $showDiagnostics)
                     .padding(.horizontal)
                 Text("No face recognition or tracking. Only relative positions.")
                     .font(.footnote)
@@ -687,28 +846,48 @@ struct NearbyPeoplePage: View {
         .background(Color(.systemBackground))
         .onAppear {
             camera.configure()
+            camera.onSampleBuffer = { [weak viewModel] sample in
+                viewModel?.process(sampleBuffer: sample)
+            }
             camera.start()
+        }
+        .onChange(of: viewModel.statusText) { newValue in
+            if audioFeedback {
+                announcer.announce(newValue)
+            }
         }
         .onChange(of: camera.isAuthorized) { authorized in
             if authorized { camera.start() }
         }
         .onDisappear {
+            camera.onSampleBuffer = nil
             camera.stop()
+            announcer.stop()
         }
     }
 }
 
 struct CrosswalkSignalPage: View {
     @StateObject private var camera = CameraManager()
+    @StateObject private var viewModel = CrosswalkSignalViewModel()
+    @StateObject private var announcer = AnnouncementController()
     @State private var audioFeedback: Bool = true
-    @State private var statusText: String = "Status: Walk"
+    @State private var showDiagnostics: Bool = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                CameraPreviewCard(camera: camera, title: "Crosswalk Signal Preview")
-                CameraStatusCard(title: "Crosswalk Signal", status: statusText)
+                ZStack(alignment: .topLeading) {
+                    CameraPreviewCard(camera: camera, title: "Crosswalk Signal Preview")
+                    if showDiagnostics {
+                        DiagnosticsOverlay(info: viewModel.diagnostics)
+                            .padding(12)
+                    }
+                }
+                CameraStatusCard(title: "Crosswalk Signal", status: viewModel.statusText)
                 Toggle("Audio feedback", isOn: $audioFeedback)
+                    .padding(.horizontal)
+                Toggle("Show diagnostics", isOn: $showDiagnostics)
                     .padding(.horizontal)
                 Text("On-device only. No video is stored.")
                     .font(.footnote)
@@ -723,28 +902,48 @@ struct CrosswalkSignalPage: View {
         .background(Color(.systemBackground))
         .onAppear {
             camera.configure()
+            camera.onSampleBuffer = { [weak viewModel] sample in
+                viewModel?.process(sampleBuffer: sample)
+            }
             camera.start()
+        }
+        .onChange(of: viewModel.statusText) { newValue in
+            if audioFeedback {
+                announcer.announce(newValue)
+            }
         }
         .onChange(of: camera.isAuthorized) { authorized in
             if authorized { camera.start() }
         }
         .onDisappear {
+            camera.onSampleBuffer = nil
             camera.stop()
+            announcer.stop()
         }
     }
 }
 
 struct PathGuidancePage: View {
     @StateObject private var camera = CameraManager()
+    @StateObject private var viewModel = PathGuidanceViewModel()
+    @StateObject private var announcer = AnnouncementController()
     @State private var audioFeedback: Bool = true
-    @State private var statusText: String = "Guidance: Slight left"
+    @State private var showDiagnostics: Bool = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                CameraPreviewCard(camera: camera, title: "Path Guidance Preview")
-                CameraStatusCard(title: "Guidance (Experimental)", status: statusText)
+                ZStack(alignment: .topLeading) {
+                    CameraPreviewCard(camera: camera, title: "Path Guidance Preview")
+                    if showDiagnostics {
+                        DiagnosticsOverlay(info: viewModel.diagnostics)
+                            .padding(12)
+                    }
+                }
+                CameraStatusCard(title: "Guidance (Experimental)", status: viewModel.statusText)
                 Toggle("Audio feedback", isOn: $audioFeedback)
+                    .padding(.horizontal)
+                Toggle("Show diagnostics", isOn: $showDiagnostics)
                     .padding(.horizontal)
                 Text("Experimental feature. Guidance is approximate.")
                     .font(.footnote)
@@ -759,45 +958,40 @@ struct PathGuidancePage: View {
         .background(Color(.systemBackground))
         .onAppear {
             camera.configure()
+            camera.onSampleBuffer = { [weak viewModel] sample in
+                viewModel?.process(sampleBuffer: sample)
+            }
             camera.start()
+        }
+        .onChange(of: viewModel.statusText) { newValue in
+            if audioFeedback {
+                announcer.announce(newValue)
+            }
         }
         .onChange(of: camera.isAuthorized) { authorized in
             if authorized { camera.start() }
         }
         .onDisappear {
+            camera.onSampleBuffer = nil
             camera.stop()
+            announcer.stop()
         }
     }
 }
 
-private final class TextReaderSpeech: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
-    private let synthesizer = AVSpeechSynthesizer()
-
-    override init() {
-        super.init()
-        synthesizer.delegate = self
-    }
-
-    func speak(_ text: String) {
-        let utterance = AVSpeechUtterance(string: text)
-        synthesizer.stopSpeaking(at: .immediate)
-        synthesizer.speak(utterance)
-    }
-
-    func pause() {
-        synthesizer.pauseSpeaking(at: .word)
-    }
-
-    func stop() {
-        synthesizer.stopSpeaking(at: .immediate)
-    }
-}
 
 struct MicPage: View {
+    @StateObject private var viewModel = MicViewModel()
+
     var body: some View {
-        MicVisualizerView()
-            .navigationTitle("Mic")
-            .navigationBarTitleDisplayMode(.inline)
+        ScrollView {
+            VStack(spacing: 16) {
+                MicTileView(viewModel: viewModel)
+            }
+            .padding()
+        }
+        .navigationTitle("Mic")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -859,6 +1053,7 @@ struct MorseInputPage: View {
     @State private var wordGap: Double = 1.2
     @AppStorage("morse.input.haptic.dot") private var hapticDotEnabled: Bool = true
     @AppStorage("morse.input.haptic.dash") private var hapticDashEnabled: Bool = true
+    @Environment(\.appThemeColor) private var appThemeColor
 
     var body: some View {
         ScrollView {
@@ -873,10 +1068,10 @@ struct MorseInputPage: View {
 
                 ZStack {
                     RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(isPressing ? Color.blue.opacity(0.2) : Color.secondary.opacity(0.08))
+                        .fill(isPressing ? appThemeColor.opacity(0.2) : Color.secondary.opacity(0.08))
                         .overlay(
                             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                .stroke(Color.blue.opacity(0.2), lineWidth: 1)
+                                .stroke(appThemeColor.opacity(0.2), lineWidth: 1)
                         )
                         .frame(height: 240)
 
@@ -1104,6 +1299,7 @@ struct MorseOutputPage: View {
     @State private var settings = MorsePlaybackSettings()
     @FocusState private var editorFocused: Bool
     @StateObject private var haptics = MorseHaptics()
+    @Environment(\.appThemeColor) private var appThemeColor
 
     var body: some View {
         let words = parsedWords()
@@ -1205,7 +1401,7 @@ struct MorseOutputPage: View {
                                             .padding(.horizontal, 12)
                                             .background(
                                                 Capsule()
-                                                    .fill(selectedWordIndex == idx ? Color.blue.opacity(0.2) : Color.secondary.opacity(0.12))
+                                                    .fill(selectedWordIndex == idx ? appThemeColor.opacity(0.2) : Color.secondary.opacity(0.12))
                                             )
                                     }
                                     .buttonStyle(.plain)
@@ -2012,7 +2208,7 @@ struct BrowserPage: View {
                                 loadFromURLText()
                             }
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(PressableButtonStyle(prominent: false))
                     }
                     HStack(spacing: 10) {
                         Button {
@@ -2021,14 +2217,14 @@ struct BrowserPage: View {
                             Image(systemName: "arrow.right.circle.fill")
                             Text("Go")
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(PressableButtonStyle(prominent: true))
 
                         Button {
                             readerModel.goBack()
                         } label: {
                             Image(systemName: "chevron.left")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(PressableButtonStyle(prominent: false))
                         .disabled(!readerModel.canGoBack)
 
                         Button {
@@ -2036,7 +2232,7 @@ struct BrowserPage: View {
                         } label: {
                             Image(systemName: "chevron.right")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(PressableButtonStyle(prominent: false))
                         .disabled(!readerModel.canGoForward)
 
                         Button {
@@ -2044,14 +2240,14 @@ struct BrowserPage: View {
                         } label: {
                             Image(systemName: "arrow.clockwise")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(PressableButtonStyle(prominent: false))
 
                         Button {
                             readerModel.stop()
                         } label: {
                             Image(systemName: "xmark")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(PressableButtonStyle(prominent: false))
                         .disabled(!readerModel.isLoading)
 
                         Spacer()
@@ -2061,8 +2257,7 @@ struct BrowserPage: View {
                         } label: {
                             Image(systemName: "bookmark")
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
+                        .buttonStyle(PressableButtonStyle(prominent: true))
                     }
                 }
                 .padding(16)
@@ -2132,7 +2327,7 @@ struct BrowserPage: View {
                                     Image(systemName: "trash")
                                         .foregroundStyle(.red)
                                 }
-                                .buttonStyle(.bordered)
+                                .buttonStyle(PressableButtonStyle(prominent: false))
                             }
                             .padding(10)
                             .background(
@@ -2205,44 +2400,43 @@ struct BrowserPage: View {
                         } label: {
                             Image(systemName: "backward.fill")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(PressableButtonStyle(prominent: false))
 
                         Button {
                             readerModel.startSpeaking(rate: Float(speechRate))
                         } label: {
                             Image(systemName: "play.fill")
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(PressableButtonStyle(prominent: true))
 
                         Button {
                             readerModel.pauseSpeaking()
                         } label: {
                             Image(systemName: "pause.fill")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(PressableButtonStyle(prominent: false))
 
                         Button {
                             readerModel.resumeSpeaking()
                         } label: {
                             Image(systemName: "gobackward")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(PressableButtonStyle(prominent: false))
 
                         Button {
                             readerModel.stopSpeaking()
                         } label: {
                             Image(systemName: "stop.fill")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(PressableButtonStyle(prominent: false))
 
                         Button {
                             readerModel.skipWord(1, rate: Float(speechRate))
                         } label: {
                             Image(systemName: "forward.fill")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(PressableButtonStyle(prominent: false))
                     }
-                    .controlSize(.large)
                     MorseSettingSlider(title: "Speech rate", value: $speechRate, range: 0.3...0.7, suffix: "")
                     Text("Bonus: Read selection (long-press text)")
                         .font(.footnote)
@@ -2287,6 +2481,11 @@ struct BrowserPage: View {
         .onTapGesture {
             urlFieldFocused = false
         }
+        .onChange(of: speechRate) { newValue in
+            if readerModel.isSpeaking {
+                readerModel.restartSpeaking(rate: Float(newValue))
+            }
+        }
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
@@ -2328,6 +2527,7 @@ private final class WebReaderModel: NSObject, ObservableObject, WKNavigationDele
     @Published var canGoBack: Bool = false
     @Published var canGoForward: Bool = false
     @Published var currentSpokenLabel: String = "Not reading"
+    @Published var isSpeaking: Bool = false
 
     private(set) var webView: WKWebView?
     private let synthesizer = AVSpeechSynthesizer()
@@ -2499,20 +2699,31 @@ private final class WebReaderModel: NSObject, ObservableObject, WKNavigationDele
             guard let self, let text, !text.isEmpty else { return }
             self.cacheText(text)
             self.speakFrom(index: self.currentWordIndex, rate: rate)
+            DispatchQueue.main.async {
+                self.isSpeaking = true
+            }
         }
     }
 
     func pauseSpeaking() {
         synthesizer.pauseSpeaking(at: .word)
+        isSpeaking = false
     }
 
     func resumeSpeaking() {
         synthesizer.continueSpeaking()
+        isSpeaking = true
     }
 
     func stopSpeaking() {
         synthesizer.stopSpeaking(at: .immediate)
         currentSpokenLabel = "Stopped"
+        isSpeaking = false
+    }
+
+    func restartSpeaking(rate: Float) {
+        guard isSpeaking else { return }
+        speakFrom(index: currentWordIndex, rate: rate)
     }
 
     func skipWord(_ delta: Int, rate: Float) {
@@ -2590,6 +2801,12 @@ private final class WebReaderModel: NSObject, ObservableObject, WKNavigationDele
         if current >= 0, current < cachedWords.count {
             currentWordIndex = current
             updateCurrentSpokenLabel()
+        }
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        DispatchQueue.main.async {
+            self.isSpeaking = false
         }
     }
 
@@ -2750,6 +2967,8 @@ struct SettingsPage: View {
     @AppStorage("startup.open.enabled") private var openOnStartup: Bool = false
     @AppStorage("startup.open.tile") private var startupTile: String = StartupTile.none.rawValue
     @AppStorage("theme.color") private var themeColorName: String = ThemeColor.blue.rawValue
+    @AppStorage(SpeechSettings.voiceIdentifierKey) private var speechVoiceIdentifier: String = SpeechSettings.autoVoiceIdentifier
+    @AppStorage(SpeechSettings.rateKey) private var speechRate: Double = 0.5
 
     var body: some View {
         Form {
@@ -2769,6 +2988,22 @@ struct SettingsPage: View {
                     }
                 }
             }
+            Section("Speech") {
+                Picker("Voice", selection: $speechVoiceIdentifier) {
+                    Text("Auto (best match)").tag(SpeechSettings.autoVoiceIdentifier)
+                    ForEach(availableVoices(), id: \.identifier) { voice in
+                        Text("\(voice.name) (\(voice.language))")
+                            .tag(voice.identifier)
+                    }
+                }
+                MorseSettingSlider(title: "Speech rate", value: $speechRate, range: 0.3...0.7, suffix: "")
+                Button("Test Voice") {
+                    SpeechAnnouncer.shared.testVoice()
+                }
+                Text("Tip: Download enhanced voices in Settings → Accessibility → Spoken Content → Voices.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             Section("Startup") {
                 Toggle("Open tile on start-up", isOn: $openOnStartup)
                 if openOnStartup {
@@ -2785,6 +3020,16 @@ struct SettingsPage: View {
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func availableVoices() -> [AVSpeechSynthesisVoice] {
+        let voices = AVSpeechSynthesisVoice.speechVoices()
+        let locale = Locale.current.identifier
+        let language = Locale.current.languageCode ?? "en"
+        let preferred = voices.filter { $0.language == locale }
+        let fallback = voices.filter { $0.language.hasPrefix(language) }
+        let list = preferred.isEmpty ? fallback : preferred
+        return list.sorted { $0.name < $1.name }
     }
 }
 
@@ -3038,6 +3283,8 @@ struct MorseTutorialPage: View {
 }
 
 private struct MorseHeroCard: View {
+    @Environment(\.appThemeColor) private var appThemeColor
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
@@ -3045,7 +3292,7 @@ private struct MorseHeroCard: View {
                     .font(.system(size: 28, weight: .semibold))
                     .foregroundStyle(.white)
                     .padding(10)
-                    .background(Circle().fill(Color.blue))
+                    .background(Circle().fill(appThemeColor))
                 VStack(alignment: .leading, spacing: 4) {
                     Text("How Morse Code Works")
                         .font(.title2.bold())
@@ -3064,10 +3311,10 @@ private struct MorseHeroCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(LinearGradient(colors: [Color.blue.opacity(0.12), Color.blue.opacity(0.04)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .fill(LinearGradient(colors: [appThemeColor.opacity(0.12), appThemeColor.opacity(0.04)], startPoint: .topLeading, endPoint: .bottomTrailing))
                 .overlay(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.blue.opacity(0.2), lineWidth: 1)
+                        .stroke(appThemeColor.opacity(0.2), lineWidth: 1)
                 )
         )
     }
@@ -3470,6 +3717,7 @@ struct ASLPhrasesPage: View {
 
 private struct PhraseSection: View {
     @AppStorage("accessibility.simplifiedUI") private var simplifiedUI: Bool = false
+    @Environment(\.appThemeColor) private var appThemeColor
 
     let title: String
     let items: [String]
@@ -3482,10 +3730,10 @@ private struct PhraseSection: View {
                 .padding(simplifiedUI ? 18 : 12)
                 .background(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(simplifiedUI ? Color.blue : Color.blue.opacity(0.12))
+                        .fill(simplifiedUI ? appThemeColor : appThemeColor.opacity(0.12))
                         .overlay(
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .stroke(Color.blue.opacity(0.2), lineWidth: 1)
+                                .stroke(appThemeColor.opacity(0.2), lineWidth: 1)
                         )
                 )
                 .foregroundStyle(simplifiedUI ? .white : .primary)
@@ -3507,7 +3755,7 @@ private struct PhraseSection: View {
                     .padding(simplifiedUI ? 18 : 12)
                     .background(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(simplifiedUI ? Color.blue.opacity(0.9) : Color(.systemBackground))
+                            .fill(simplifiedUI ? appThemeColor.opacity(0.9) : Color(.systemBackground))
                             .shadow(color: .black.opacity(0.06), radius: 6, x: 0, y: 3)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -3550,6 +3798,7 @@ private struct PhraseDetailPage: View {
 
 private struct PhraseWordTile: View {
     @AppStorage("accessibility.simplifiedUI") private var simplifiedUI: Bool = false
+    @Environment(\.appThemeColor) private var appThemeColor
 
     let word: String
 
@@ -3584,7 +3833,7 @@ private struct PhraseWordTile: View {
         .padding(simplifiedUI ? 18 : 12)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(simplifiedUI ? Color.blue.opacity(0.12) : Color(.systemBackground))
+                .fill(simplifiedUI ? appThemeColor.opacity(0.12) : Color(.systemBackground))
                 .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
                 .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -3792,6 +4041,7 @@ private struct ASLNumberCard: View {
 // New helper view InfoTile added after ASLPhrasesPage
 private struct InfoTile: View {
     @AppStorage("accessibility.simplifiedUI") private var simplifiedUI: Bool = false
+    @Environment(\.appThemeColor) private var appThemeColor
 
     let title: String
     let text: String
@@ -3813,7 +4063,7 @@ private struct InfoTile: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color.blue)
+                        .fill(appThemeColor)
                         .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
                 )
             } else {

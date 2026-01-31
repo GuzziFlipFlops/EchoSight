@@ -144,8 +144,10 @@ struct TutorialPageView: View {
 
 struct RootView: View {
     @StateObject private var flow = AppFlow()
+    @AppStorage("theme.color") private var themeColorName: String = ThemeColor.blue.rawValue
 
     var body: some View {
+        let themeColor = ThemeColor(rawValue: themeColorName)?.color ?? .blue
         Group {
             switch flow.phase {
             case .loading:
@@ -156,6 +158,8 @@ struct RootView: View {
                 HomeView()
             }
         }
+        .tint(themeColor)
+        .environment(\.appThemeColor, themeColor)
         .environmentObject(flow)
     }
 }
